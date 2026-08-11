@@ -44,7 +44,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
- /* const isAudio = url.pathname.startsWith('/audio/');
+const isAudio = url.pathname.startsWith('/audio/');
 
   if (isAudio) {
     // Cache-first: once a song is played, it's cached for offline listening
@@ -60,11 +60,6 @@ self.addEventListener('fetch', (event) => {
         );
       })
     );
-  } */
-  if (isAudio) {
-  // Do not cache audio files.
-  // Let the browser handle MP3 streaming directly.
-  return;
 } else {
     // Network-first: always try to get the latest site, fall back to cache offline
     event.respondWith(
