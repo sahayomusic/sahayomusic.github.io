@@ -140,6 +140,17 @@
     margin: 0 0 28px;
   }
 
+  .offline-banner {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    text-align: center;
+    color: var(--ink);
+    background: var(--gold);
+    border-radius: 8px;
+    padding: 8px 14px;
+    margin: 0 0 16px;
+  }
+
   /* --- Turntable --- */
   .turntable {
     position: relative;

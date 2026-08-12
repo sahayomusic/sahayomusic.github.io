@@ -8,6 +8,7 @@
 
   const els = {
     eyebrow: document.getElementById('eyebrow'),
+    offlineBanner: document.getElementById('offlineBanner'),
     platter: document.getElementById('platter'),
     labelArt: document.getElementById('labelArt'),
     title: document.getElementById('trackTitle'),
@@ -52,6 +53,9 @@
   let repeatOn = false;
   let filterLikedOnly = false;
   let lastVolume = 0.8;
+  let loadRetryCount = 0;
+  let isBuffering = false;
+  const MAX_LOAD_RETRIES = 4;
   let searchQuery = '';
   let seekInterval = null;
   let isSeeking = false;
@@ -212,15 +216,13 @@
     els.labelArt.src = `images/${coverBase}${COVER_FORMATS[formatIndex]}`;
   }
 
-  function loadTrack(index, autoplay) {
-    if (tracks.length === 0) return;
-    if (sound) { sound.unload(); }
-    currentIndex = ((index % tracks.length) + tracks.length) % tracks.length;
-    const t = tracks[currentIndex];
-
-    const coverBase = t.src.replace(/^audio\//, '').replace(/\.mp3$/i, '');
-    loadCoverArt(coverBase);
-
+  // Builds (or rebuilds, on retry) the Howl instance for a track.
+  // html5:true (already set) lets the browser stream progressively
+  // instead of needing the whole file downloaded before playing —
+  // the single biggest fix for spotty connections. On top of that:
+  // real retry-on-failure, and honest "Buffering…" feedback instead
+  // of the player just looking frozen/broken during a network hiccup.
+  function buildSound(t, autoplay) {
     sound = new Howl({
       src: [t.src],
       html5: true,
@@ -231,6 +233,7 @@
         els.seek.max = dur;
         const durEl = document.querySelector(`.t-dur[data-dur="${currentIndex}"]`);
         if (durEl) durEl.textContent = fmtTime(dur);
+        loadRetryCount = 0; // successful load resets the counter
       },
       onplay: () => { setPlayingState(true); startSeekLoop(); },
       onpause: () => setPlayingState(false),
@@ -241,7 +244,50 @@
           goNext();
         }
       },
+      onloaderror: () => retryLoad(t, autoplay),
+      onplayerror: () => retryLoad(t, autoplay),
     });
+
+    // html5:true means Howler plays through a real <audio> element under
+    // the hood — hooking its native events gives real buffering status
+    // that Howler itself doesn't expose.
+    const node = sound._sounds && sound._sounds[0] && sound._sounds[0]._node;
+    if (node) {
+      node.addEventListener('waiting', () => { isBuffering = true; updateEyebrowText(); });
+      node.addEventListener('stalled', () => { isBuffering = true; updateEyebrowText(); });
+      node.addEventListener('playing', () => { isBuffering = false; updateEyebrowText(); });
+      node.addEventListener('canplay', () => { isBuffering = false; updateEyebrowText(); });
+    }
+
+    if (autoplay) sound.play();
+  }
+
+  function retryLoad(t, autoplay) {
+    isBuffering = false;
+    if (loadRetryCount >= MAX_LOAD_RETRIES) {
+      els.eyebrow.textContent = 'Connection trouble — tap play to retry';
+      return;
+    }
+    loadRetryCount++;
+    els.eyebrow.textContent = `Connection trouble — retrying… (${loadRetryCount}/${MAX_LOAD_RETRIES})`;
+    const delay = Math.min(1000 * Math.pow(2, loadRetryCount - 1), 8000); // 1s, 2s, 4s, 8s
+    setTimeout(() => {
+      if (sound) sound.unload();
+      buildSound(t, autoplay);
+    }, delay);
+  }
+
+  function loadTrack(index, autoplay) {
+    if (tracks.length === 0) return;
+    if (sound) { sound.unload(); }
+    currentIndex = ((index % tracks.length) + tracks.length) % tracks.length;
+    const t = tracks[currentIndex];
+    loadRetryCount = 0;
+
+    const coverBase = t.src.replace(/^audio\//, '').replace(/\.mp3$/i, '');
+    loadCoverArt(coverBase);
+
+    buildSound(t, autoplay);
 
     els.title.textContent = t.title;
     els.artist.textContent = t.artist;
@@ -263,13 +309,19 @@
         ],
       });
     }
-
-    if (autoplay) playCurrent();
   }
 
   function playCurrent() {
     if (!sound) return;
     sound.play();
+  }
+
+  function updateEyebrowText() {
+    if (isBuffering) {
+      els.eyebrow.textContent = 'Buffering…';
+    } else {
+      els.eyebrow.textContent = isPlaying ? 'Now Spinning' : (currentIndex === -1 ? 'Ready to Spin' : 'Paused');
+    }
   }
 
   function setPlayingState(playing) {
@@ -278,7 +330,7 @@
     els.playIcon.style.display = playing ? 'none' : 'block';
     els.pauseIcon.style.display = playing ? 'block' : 'none';
     els.playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
-    els.eyebrow.textContent = playing ? 'Now Spinning' : (currentIndex === -1 ? 'Ready to Spin' : 'Paused');
+    updateEyebrowText();
     if ('mediaSession' in navigator) {
       navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
     }
@@ -562,6 +614,16 @@
       });
     });
   }
+
+  // Let people know when they've lost connection entirely, rather than
+  // leaving them guessing why playback stopped working. Previously-played
+  // songs still work fine offline thanks to the service worker's cache.
+  function updateOfflineBanner() {
+    els.offlineBanner.style.display = navigator.onLine ? 'none' : 'block';
+  }
+  window.addEventListener('online', updateOfflineBanner);
+  window.addEventListener('offline', updateOfflineBanner);
+  updateOfflineBanner();
 
   // Media Session API — this is what puts previous/next (and play/pause)
   // controls on the Android notification and lock screen, instead of
