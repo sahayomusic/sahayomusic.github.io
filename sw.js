@@ -35,41 +35,30 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch: cache-first for audio/static files, network-first for HTML/JS
+// Fetch: network-first for HTML/JS/CSS (always get the latest site,
+// fall back to cache if offline). Audio files are deliberately NOT
+// intercepted here — <audio> elements stream using range requests
+// (small chunks, for instant playback + seeking), and the Cache API
+// doesn't handle those chunked requests well. Intercepting them forced
+// the browser to wait for a much bigger response before playback could
+// start. Letting audio requests go straight to the network (browser
+// default behavior) restores fast, reliable streaming — the tradeoff
+// is that songs are no longer available fully offline after a replay.
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Only handle same-origin GET requests
-  if (event.request.method !== 'GET' || url.origin !== self.location.origin) {
+  // Only handle same-origin GET requests, and never audio files.
+  if (event.request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/audio/')) {
     return;
   }
 
-const isAudio = url.pathname.startsWith('/audio/');
-
-  if (isAudio) {
-    // Cache-first: once a song is played, it's cached for offline listening
-    event.respondWith(
-      caches.match(event.request).then((cached) => {
-        return (
-          cached ||
-          fetch(event.request).then((response) => {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-            return response;
-          })
-        );
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        const clone = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        return response;
       })
-    );
-} else {
-    // Network-first: always try to get the latest site, fall back to cache offline
-    event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          return response;
-        })
-        .catch(() => caches.match(event.request))
-    );
-  }
+      .catch(() => caches.match(event.request))
+  );
 });
