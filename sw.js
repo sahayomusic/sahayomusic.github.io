@@ -35,23 +35,20 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Fetch: network-first for HTML/JS/CSS (always get the latest site,
-// fall back to cache if offline). Audio files are deliberately NOT
-// intercepted here — <audio> elements stream using range requests
-// (small chunks, for instant playback + seeking), and the Cache API
-// doesn't handle those chunked requests well. Intercepting them forced
-// the browser to wait for a much bigger response before playback could
-// start. Letting audio requests go straight to the network (browser
-// default behavior) restores fast, reliable streaming — the tradeoff
-// is that songs are no longer available fully offline after a replay.
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
 
-  // Only handle same-origin GET requests, and never audio files.
-  if (event.request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/audio/')) {
+  if (event.request.method !== 'GET' || url.origin !== self.location.origin) {
     return;
   }
 
+  if (url.pathname.startsWith('/audio/')) {
+    event.respondWith(handleAudioRequest(event.request));
+    return;
+  }
+
+  // Network-first for HTML/JS/CSS — always get the latest site,
+  // fall back to cache only if offline.
   event.respondWith(
     fetch(event.request)
       .then((response) => {
@@ -62,3 +59,76 @@ self.addEventListener('fetch', (event) => {
       .catch(() => caches.match(event.request))
   );
 });
+
+// Audio strategy: <audio> elements stream in small chunks using
+// "Range" requests (this is what makes instant playback + seeking
+// possible). The Cache API has no built-in support for serving partial
+// content, so we handle it manually:
+//
+// - If we already have the FULL song cached, slice out exactly the
+//   bytes the browser asked for and return a proper 206 Partial
+//   Content response — this works even fully offline.
+// - If we don't have it cached yet, the request goes straight to the
+//   network untouched (so first-time playback stays instantly fast,
+//   exactly like a normal browser tab), while a separate background
+//   fetch quietly downloads and caches the complete file for next
+//   time — without making the current playback wait for it.
+const pendingCaches = new Set();
+
+async function handleAudioRequest(request) {
+  const cache = await caches.open(CACHE_NAME);
+  const cacheKey = request.url.split('?')[0];
+  const fullCached = await cache.match(cacheKey);
+
+  if (fullCached) {
+    return serveFromCache(fullCached, request.headers.get('range'));
+  }
+
+  cacheFullFileInBackground(cacheKey, cache);
+  return fetch(request);
+}
+
+async function serveFromCache(cachedResponse, rangeHeader) {
+  const blob = await cachedResponse.blob();
+  const totalSize = blob.size;
+  const contentType = blob.type || 'audio/mpeg';
+
+  if (!rangeHeader) {
+    return new Response(blob, {
+      status: 200,
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': totalSize,
+        'Accept-Ranges': 'bytes',
+      },
+    });
+  }
+
+  const match = /bytes=(\d+)-(\d+)?/.exec(rangeHeader);
+  const start = match && match[1] ? parseInt(match[1], 10) : 0;
+  const end = match && match[2] ? parseInt(match[2], 10) : totalSize - 1;
+  const chunk = blob.slice(start, end + 1);
+
+  return new Response(chunk, {
+    status: 206,
+    statusText: 'Partial Content',
+    headers: {
+      'Content-Type': contentType,
+      'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+      'Content-Length': chunk.size,
+      'Accept-Ranges': 'bytes',
+    },
+  });
+}
+
+function cacheFullFileInBackground(url, cache) {
+  if (pendingCaches.has(url)) return; // already downloading this one
+  pendingCaches.add(url);
+
+  fetch(url) // deliberately no Range header — grab the whole file
+    .then((response) => {
+      if (response.ok) return cache.put(url, response);
+    })
+    .catch(() => { /* offline or failed — just try again next play */ })
+    .finally(() => pendingCaches.delete(url));
+}
