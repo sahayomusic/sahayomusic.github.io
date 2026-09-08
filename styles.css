@@ -92,6 +92,7 @@
       min-height: 0;
       overflow-y: auto;
       max-height: none;
+      padding-top: 14px;
     }
 
     .support-link {
@@ -638,6 +639,7 @@
     max-height: 50vh;
     max-height: 50dvh;
     overflow-y: auto;
+    padding-top: 14px;
   }
 
   .share-btn.active {
